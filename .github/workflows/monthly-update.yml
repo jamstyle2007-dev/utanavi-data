@@ -1,42 +1,39 @@
-name: monthly-song-update
-
+name: song-data-update
+# 毎日 00:30 JST（15:30 UTC）に実行。手動実行も可。
 on:
   schedule:
-    - cron: "0 0 1 * *"
+    - cron: "30 15 * * *"
   workflow_dispatch:
-
 permissions:
   contents: write
-
 jobs:
   update:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: latest songs
+      - name: 最新曲を取り込み
         run: python3 update_songs.py | tee summary.txt
-
-      - name: validate
+      - name: 検証（壊れたJSON/件数激減を弾く）
         run: |
           python3 - <<'PY'
           import json
           d = json.load(open("songs.json", encoding="utf-8"))
           assert isinstance(d, list) and len(d) >= 3000, f"songs.json invalid: {len(d)}"
           ids = [s["id"] for s in d]
-          assert len(ids) == len(set(ids)), "duplicate id"
+          assert len(ids) == len(set(ids)), "id duplicated"
           print("validate OK:", len(d))
           PY
-
-      - name: commit & push
+      - name: 変更があればコミット＆プッシュ
         run: |
-          if git diff --quiet songs.json; then echo "no change"; exit 0; fi
+          if git diff --quiet songs.json; then
+            echo "変更なし。スキップ。"
+            exit 0
+          fi
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add songs.json
-          git commit -m "chore: monthly song update $(date +%F)"
+          git commit -m "chore: 最新曲更新 $(date +%F) — $(cat summary.txt)"
           git push
