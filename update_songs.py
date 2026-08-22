@@ -21,8 +21,7 @@
 
 usage: python3 update_songs.py [--no-songs] [--no-hot]
 """
-import json, re, sys, time, urllib.parse, urllib.request, datetime, collections
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import json, re, sys, time, urllib.parse, urllib.request, urllib.error, datetime, collections
 
 HERE = __file__.rsplit("/", 1)[0] if "/" in __file__ else "."
 SONGS = HERE + "/songs.json"
@@ -50,13 +49,23 @@ def dtag(y): return "〜60年代前" if y < 1960 else (f"{(y//10)*10}年代" if 
 def etag(y): return "令和" if y >= 2019 else ("平成" if y >= 1989 else "昭和")
 def slug(t, a): return (re.sub(r"[^a-z0-9]+", "-", (t + "-" + a).lower()).strip("-")[:40]) or "song"
 
+REQ_INTERVAL = 3.2   # iTunes Search API は約20req/分で 429→403(一時ブロック) になるため直列・間隔あり
+_last_req = [0.0]
 def fetch_json(url, tries=3):
+    err = None
     for k in range(tries):
+        wait = REQ_INTERVAL - (time.time() - _last_req[0])
+        if wait > 0: time.sleep(wait)
         try:
+            _last_req[0] = time.time()
             with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=25) as r:
                 return json.load(r)
+        except urllib.error.HTTPError as e:
+            err = e
+            if e.code in (429, 403): time.sleep(60 * (k + 1))   # レート制限は長めに待つ
+            else: time.sleep(2)
         except Exception as e:
-            err = e; time.sleep(1 + k)
+            err = e; time.sleep(2)
     print("  fetch失敗:", url[:90], err); return None
 
 def itunes_artist(artist):
@@ -138,15 +147,16 @@ def update_songs(cat):
             out.append((tn, an, y, rd))
         out.sort(key=lambda x: x[3], reverse=True)   # 新しい順
         return out
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        futs = {ex.submit(work, k): k for k in artists}
-        for fut in as_completed(futs):
-            n_art = 0
-            for tn, an, y, rd in fut.result():
-                if added >= MAX_NEW_TOTAL or n_art >= PER_ARTIST_CAP: break
-                why = cat.reject_reason(tn, an)
-                if why: dropped[why] += 1; continue
-                cat.add(tn, an, y); added += 1; n_art += 1
+    # 直列（レート制限対策）。約700アーティスト×3.2秒 ≒ 40分。GitHub Actions の月1実行なら問題ない。
+    for i, k in enumerate(artists):
+        if added >= MAX_NEW_TOTAL: break
+        n_art = 0
+        for tn, an, y, rd in work(k):
+            if added >= MAX_NEW_TOTAL or n_art >= PER_ARTIST_CAP: break
+            why = cat.reject_reason(tn, an)
+            if why: dropped[why] += 1; continue
+            cat.add(tn, an, y); added += 1; n_art += 1
+        if i % 100 == 0: print(f"  進捗 {i}/{len(artists)} added={added}", flush=True)
     print(f"songs: added={added} dropped={dict(dropped)} total={len(cat.songs)}")
     return added
 
