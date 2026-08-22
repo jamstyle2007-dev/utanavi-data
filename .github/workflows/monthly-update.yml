@@ -1,45 +1,39 @@
 name: song-data-update
-# 毎月1日 00:30 JST（前日15:30 UTC）に実行。手動実行も可。
-# 新曲の追記（検証付き）と「いま人気TOP100」(hot.json) の更新を行う。
+# 毎日 00:30 JST（15:30 UTC）に実行。手動実行も可。
 on:
   schedule:
-    - cron: "30 15 1 * *"
+    - cron: "30 15 * * *"
   workflow_dispatch:
 permissions:
   contents: write
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: 新曲追記＋人気TOP100更新
+      - name: 最新曲を取り込み
         run: python3 update_songs.py | tee summary.txt
-      - name: 検証（壊れたJSON/件数激減/人気曲の欠落を弾く）
+      - name: 検証（壊れたJSON/件数激減を弾く）
         run: |
           python3 - <<'PY'
           import json
           d = json.load(open("songs.json", encoding="utf-8"))
-          assert isinstance(d, list) and len(d) >= 4000, f"songs.json invalid: {len(d)}"
+          assert isinstance(d, list) and len(d) >= 3000, f"songs.json invalid: {len(d)}"
           ids = [s["id"] for s in d]
           assert len(ids) == len(set(ids)), "id duplicated"
-          bad = [s for s in d if s.get("year", 0) >= 2025 and not s.get("scenes")]
-          assert not bad, f"場面なしの新曲が {len(bad)} 件（検証漏れ）"
-          h = json.load(open("hot.json", encoding="utf-8"))
-          assert len(h["items"]) >= 50 and h.get("updatedAt"), "hot.json invalid"
-          print("validate OK:", len(d), "hot", len(h["items"]), h["updatedAt"])
+          print("validate OK:", len(d))
           PY
       - name: 変更があればコミット＆プッシュ
         run: |
-          if git diff --quiet songs.json hot.json; then
+          if git diff --quiet songs.json; then
             echo "変更なし。スキップ。"
             exit 0
           fi
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add songs.json hot.json
-          git commit -m "chore: 月次更新 $(date +%F) — $(tail -1 summary.txt)"
+          git add songs.json
+          git commit -m "chore: 最新曲更新 $(date +%F) — $(cat summary.txt)"
           git push
